@@ -1,0 +1,57 @@
+{
+  "name": "dsh-approval-toast",
+  "version": "1.0.0",
+  "description": "Windows toast notifications for DeepSeek Harness approvals: approve or reject from the notification while DSH is in the background, with an in-app fallback; plus turn completion and error notifications.",
+  "type": "module",
+  "main": "index.js",
+  "icon": "assets/icon.png",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek",
+    "deepseek-harness",
+    "cordis",
+    "approval",
+    "notification",
+    "toast",
+    "windows"
+  ],
+  "engines": {
+    "node": ">=18",
+    "dsh": ">=0.2.1-rc.1 <0.3.0-0"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "toast.ps1",
+    "decision.ps1",
+    "uninstall.ps1",
+    "assets",
+    "locale",
+    "icon.svg",
+    "SECURITY.md"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zy12342/dsh-approval-toast.git"
+  },
+  "homepage": "https://github.com/zy12342/dsh-approval-toast#readme",
+  "bugs": {
+    "url": "https://github.com/zy12342/dsh-approval-toast/issues"
+  }
+}

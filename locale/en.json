@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Desktop Notify",
+    "description": "Windows toast notifications for DSH: approve or deny tool requests from the notification, plus task-completion and error toasts."
+  }
+}
