@@ -57,8 +57,6 @@ try {
         try { return ([Uri]::new($path)).AbsoluteUri } catch { return '' }
     }
 
-    # Skip the toast when DSH itself is in the foreground: the in-app dialog is
-    # the natural choice there and skipping avoids a stale host-side prompt.
     Add-Type -TypeDefinition @"
 using System;
 using System.Text;
@@ -74,26 +72,21 @@ public static class DshForeground {
     [void][DshForeground]::GetWindowText($fg, $fgTitle, 512)
     $fgClass = New-Object System.Text.StringBuilder 256
     [void][DshForeground]::GetClassName($fg, $fgClass, 256)
+
+    # When the DSH window is in the foreground, suppress only the currently
+    # visible conversation's toast (the in-app UI already shows it). Toasts for
+    # other conversations still appear so parallel sessions are not missed.
     if (($fgTitle.ToString() -match 'DeepSeek Harness') -and ($fgClass.ToString() -match 'Chrome_WidgetWin')) {
         $fgText = $fgTitle.ToString()
-        $sameSession = ($SessionTitle -ne '') -and ($fgText.StartsWith($SessionTitle.Trim()))
-        # The log is local, but keep it free of window/session titles anyway.
-        if ($Approval) {
-            # An in-app prompt is only visible when this very session is on screen.
-            if ($sameSession) {
-                Write-NotifyLog 'SKIP foreground (same session)'
-                exit 5
-            }
-            Write-NotifyLog 'SHOW foreground (other session)'
-        } else {
-            # Informational toasts are redundant while the user is looking at DSH,
-            # except for another session that is not on screen.
-            if ($SessionTitle -eq '' -or $sameSession) {
-                Write-NotifyLog 'SKIP foreground (info)'
-                exit 5
-            }
-            Write-NotifyLog 'SHOW foreground (other session)'
+        $activeTitle = ($fgText -replace '\s*[—–-]\s*DeepSeek Harness\s*$', '').Trim()
+        $requestTitle = $SessionTitle.Trim()
+        $sameSession = ($requestTitle -ne '') -and (($activeTitle -eq $requestTitle) -or $activeTitle.StartsWith($requestTitle) -or $requestTitle.StartsWith($activeTitle))
+        Write-NotifyLog ('FG activeLen=' + $activeTitle.Length + ' sessionLen=' + $requestTitle.Length + ' same=' + $sameSession)
+        if ($sameSession) {
+            Write-NotifyLog 'SKIP foreground (same session)'
+            exit 5
         }
+        Write-NotifyLog 'SHOW foreground (other session)'
     }
 
     $hasActions = ($AllowUri -ne '') -and ($DenyUri -ne '')

@@ -6,10 +6,11 @@
  * HTTP endpoint owned by this plugin and settles the approval without bringing
  * DSH to the foreground.
  *
- * The toast is only offered while the DSH window is NOT the foreground window:
- * when the user is already looking at DSH the normal in-app approval dialog is
- * the better prompt. If the notification cannot be displayed (foreground skip,
- * missing port, spawn failure) the in-app dialog is composed as the fallback.
+ * Toasts are suppressed only for the conversation currently visible in the
+ * foreground window: that session already shows the in-app prompt. Toasts for
+ * other conversations still appear, so parallel sessions are not missed. If
+ * the toast path cannot answer (foreground skip, missing port, spawn failure)
+ * the in-app dialog is composed as the fallback.
  * The two prompts are deliberately NOT shown at the same time: the browser
  * approval panel can only dismiss itself through its own answer or through the
  * tool call's AbortSignal, so answering from the toast while that panel is open
@@ -20,11 +21,17 @@
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
+import { unlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+const WSCRIPT = 'C:\\Windows\\System32\\wscript.exe'
+const LAUNCH_VBS = join(PLUGIN_DIR, 'notify-launch.vbs')
+const DECISION_LAUNCH_VBS = join(PLUGIN_DIR, 'decision-launch.vbs')
+const CREATE_NO_WINDOW = 0x08000000
 const TOAST_SCRIPT = join(PLUGIN_DIR, 'toast.ps1')
 const DECISION_SCRIPT = join(PLUGIN_DIR, 'decision.ps1')
 const LOGO_PATH = join(PLUGIN_DIR, 'assets', 'icon.png')
@@ -35,7 +42,7 @@ const PROTOCOL = 'dshnotify'
 const AUMID = 'DSH.Notify'
 function run(file, args) {
   try {
-    const child = spawn(file, args, { windowsHide: true, stdio: 'ignore', detached: false })
+    const child = spawn(file, args, { windowsHide: true, stdio: 'ignore', detached: false, creationFlags: CREATE_NO_WINDOW })
     child.on('error', () => {})
     return child
   } catch {
@@ -53,17 +60,59 @@ function runPowerShell(args) {
  * foreground), and non-zero on any failure; the caller falls back to the
  * in-app dialog whenever the notification path cannot answer.
  */
+function psQuote(value) {
+  return "'" + String(value ?? '').replace(/'/g, "''") + "'"
+}
+
+function toastCommand(args) {
+  let command = '& ' + psQuote(TOAST_SCRIPT)
+  for (let i = 0; i < args.length; i += 1) {
+    const flag = args[i]
+    if (flag === '-Approval' || flag === '-Remove') {
+      command += ' ' + flag
+      continue
+    }
+    command += ' ' + flag + ' ' + psQuote(args[i + 1])
+    i += 1
+  }
+  return command
+}
+
+function runToastScript(command, wait) {
+  const scriptPath = join(tmpdir(), 'dsh-toast-' + process.pid + '-' + Date.now() + '-' + randomBytes(4).toString('hex') + '.ps1')
+  try {
+    writeFileSync(scriptPath, '\ufeff' + command + '\n', 'utf8')
+  } catch {
+    return undefined
+  }
+  let child
+  try {
+    child = spawn(WSCRIPT, ['//nologo', '//B', LAUNCH_VBS, scriptPath], {
+      windowsHide: true,
+      stdio: 'ignore',
+      creationFlags: CREATE_NO_WINDOW,
+    })
+  } catch {
+    try { unlinkSync(scriptPath) } catch {}
+    return undefined
+  }
+  const cleanup = () => {
+    try { unlinkSync(scriptPath) } catch {}
+  }
+  child.on('error', cleanup)
+  if (!wait) {
+    child.on('exit', cleanup)
+    child.unref()
+    return undefined
+  }
+  child.on('exit', cleanup)
+  return child
+}
+
 function showToastProcess(args) {
   return new Promise((resolve) => {
-    let child
-    try {
-      child = spawn(POWERSHELL, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ...args], {
-        windowsHide: true,
-        stdio: 'ignore',
-      })
-    } catch {
-      return resolve(-1)
-    }
+    const child = runToastScript(toastCommand(args), true)
+    if (!child) return resolve(-1)
     child.on('error', () => resolve(-1))
     child.on('exit', (code) => resolve(code ?? -1))
   })
@@ -71,7 +120,7 @@ function showToastProcess(args) {
 
 function registerProtocol() {
   const command =
-    `"${POWERSHELL}" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${DECISION_SCRIPT}" "%1"`
+    `"${WSCRIPT}" //nologo //B "${DECISION_LAUNCH_VBS}" "%1"`
   try {
     run('reg', ['add', `HKCU\\Software\\Classes\\${PROTOCOL}`, '/ve', '/d', 'URL:DSH Notification', '/f'])
     run('reg', ['add', `HKCU\\Software\\Classes\\${PROTOCOL}`, '/v', 'URL Protocol', '/d', '', '/f'])
@@ -90,13 +139,13 @@ function showToast({ title, body, allowUri, denyUri, tag, hero, sessionTitle, ap
   if (sessionTitle) args.push('-SessionTitle', sessionTitle)
   if (approval) args.push('-Approval')
   if (allowUri && denyUri) args.push('-AllowUri', allowUri, '-DenyUri', denyUri)
-  return showToastProcess([TOAST_SCRIPT, ...args]).then((code) => {
+  return showToastProcess(args).then((code) => {
     return code === 0
   })
 }
 
 function removeToast(tag) {
-  runPowerShell([TOAST_SCRIPT, '-Remove', '-Tag', tag])
+  runToastScript(toastCommand(['-Remove', '-Tag', tag]), false)
 }
 
 /**
@@ -155,6 +204,22 @@ function sessionLabel(agent) {
     /* ignore */
   }
   return ''
+}
+
+/**
+ * True for sessions created by a subagent (child agent) rather than a normal
+ * top-level conversation. Subagent notifications are intentionally silent:
+ * their approvals stay in-app and their completion/error toasts are skipped.
+ */
+function isSubagentSession(agent) {
+  try {
+    const header = agent && agent.session && agent.session.header
+    if (!header) return false
+    if (header.origin === 'subagent') return true
+    return typeof header.delegationDepth === 'number' && header.delegationDepth > 0
+  } catch {
+    return false
+  }
 }
 
 function approvalBody(req) {
@@ -294,14 +359,13 @@ export function apply(ctx) {
   // only settles through its own answer or the call's AbortSignal, so a
   // host-side early answer can never dismiss it.
   //
-  // The toast script decides whether to appear: with the DSH window in the
-  // foreground it skips only when the window title shows THIS request's session
-  // (the user can see that in-app prompt). Requests from conversations that are
-  // not currently open still notify, so parallel sessions can be approved from
-  // the desktop.
+  // The toast script decides whether to appear: when the foreground window is
+  // this request's session, the in-app UI already carries the prompt and the
+  // toast is skipped; toasts for other sessions still appear.
   ctx.on(
     'approval/request',
     async (req, next) => {
+      if (isSubagentSession(req?.agent)) return await next()
       const note = notifyApproval(req)
       let outcome = null
       try {
@@ -322,10 +386,12 @@ export function apply(ctx) {
       const agent = payload?.agent
       if (!agent) return
       if (payload.status === 'running') {
-        runningAgents.add(agent)
+        if (!isSubagentSession(agent)) runningAgents.add(agent)
         return
       }
-      if (payload.status === 'idle' && runningAgents.delete(agent)) {
+      if (payload.status === 'idle') {
+        const wasRunning = runningAgents.delete(agent)
+        if (!wasRunning || isSubagentSession(agent)) return
         const label = sessionLabel(agent)
         showToast({
           title: 'DSH 任务完成',
@@ -341,6 +407,7 @@ export function apply(ctx) {
 
   ctx.on('agent/error', (payload) => {
     try {
+      if (isSubagentSession(payload?.agent)) return
       const message = payload?.error?.message ?? payload?.error ?? '未知错误'
       showToast({
         title: 'DSH 出错了',
