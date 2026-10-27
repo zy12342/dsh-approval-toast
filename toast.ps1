@@ -8,6 +8,7 @@ param(
     [string]$Body = '',
     [string]$AllowUri = '',
     [string]$DenyUri = '',
+    [string]$OpenUri = '',
     [string]$Tag = '',
     [string]$LogoPath = '',
     [string]$HeroPath = '',
@@ -57,41 +58,16 @@ try {
         try { return ([Uri]::new($path)).AbsoluteUri } catch { return '' }
     }
 
-    Add-Type -TypeDefinition @"
-using System;
-using System.Text;
-using System.Runtime.InteropServices;
-public static class DshForeground {
-    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
-    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int count);
-}
-"@
-    $fg = [DshForeground]::GetForegroundWindow()
-    $fgTitle = New-Object System.Text.StringBuilder 512
-    [void][DshForeground]::GetWindowText($fg, $fgTitle, 512)
-    $fgClass = New-Object System.Text.StringBuilder 256
-    [void][DshForeground]::GetClassName($fg, $fgClass, 256)
+    # Active-conversation filtering happens in the host (reported by the client
+    # composer dock); this script only renders the toast it is asked to show.
 
-    # When the DSH window is in the foreground, suppress only the currently
-    # visible conversation's toast (the in-app UI already shows it). Toasts for
-    # other conversations still appear so parallel sessions are not missed.
-    if (($fgTitle.ToString() -match 'DeepSeek Harness') -and ($fgClass.ToString() -match 'Chrome_WidgetWin')) {
-        $fgText = $fgTitle.ToString()
-        $activeTitle = ($fgText -replace '\s*[—–-]\s*DeepSeek Harness\s*$', '').Trim()
-        $requestTitle = $SessionTitle.Trim()
-        $sameSession = ($requestTitle -ne '') -and (($activeTitle -eq $requestTitle) -or $activeTitle.StartsWith($requestTitle) -or $requestTitle.StartsWith($activeTitle))
-        Write-NotifyLog ('FG activeLen=' + $activeTitle.Length + ' sessionLen=' + $requestTitle.Length + ' same=' + $sameSession)
-        if ($sameSession) {
-            Write-NotifyLog 'SKIP foreground (same session)'
-            exit 5
-        }
-        Write-NotifyLog 'SHOW foreground (other session)'
-    }
-
-    $hasActions = ($AllowUri -ne '') -and ($DenyUri -ne '')
+    $hasActions = ($OpenUri -ne '') -or (($AllowUri -ne '') -and ($DenyUri -ne ''))
     $actions = ''
-    if ($hasActions) {
+    if ($OpenUri -ne '') {
+        $actions = '<actions>' +
+            '<action content="去处理" activationType="protocol" arguments="' + (Esc $OpenUri) + '" />' +
+            '</actions>'
+    } elseif ($hasActions) {
         $actions = '<actions>' +
             '<action content="允许一次" activationType="protocol" arguments="' + (Esc $AllowUri) + '" />' +
             '<action content="拒绝" activationType="protocol" arguments="' + (Esc $DenyUri) + '" />' +

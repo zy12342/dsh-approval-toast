@@ -38,6 +38,9 @@ const LOGO_PATH = join(PLUGIN_DIR, 'assets', 'icon.png')
 const LOGO_ICO = join(PLUGIN_DIR, 'assets', 'icon.ico')
 const HERO_PATH = join(PLUGIN_DIR, 'assets', 'hero.jpg')
 const APPROVAL_TIMEOUT_MS = 60000
+const TOAST_GAP_MS = 6000
+const TOAST_APPROVAL_WAIT_MS = 60000
+const TOAST_ADVANCE_GAP_MS = 600
 const PROTOCOL = 'dshnotify'
 const AUMID = 'DSH.Notify'
 function run(file, args) {
@@ -109,13 +112,75 @@ function runToastScript(command, wait) {
   return child
 }
 
+let toastChain = Promise.resolve()
+const toastWaiters = new Map()
+const cancelledTags = new Set()
+
+function tagFromArgs(args) {
+  const index = args.indexOf('-Tag')
+  return index >= 0 ? args[index + 1] : ''
+}
+
+function markCancelled(tag) {
+  if (!tag) return
+  cancelledTags.add(tag)
+  const timer = setTimeout(() => cancelledTags.delete(tag), 120000)
+  if (timer && typeof timer.unref === 'function') timer.unref()
+}
+
+function advanceToast(tag) {
+  const waiter = toastWaiters.get(tag)
+  if (!waiter) return
+  toastWaiters.delete(tag)
+  waiter()
+}
+
+/**
+ * Show toasts one at a time. Windows can otherwise stack or collapse several
+ * rapid notifications into the Action Center. Info toasts get a short display
+ * gap; approval toasts wait for the user's decision (or the approval timeout)
+ * before the next queued toast is shown.
+ */
 function showToastProcess(args) {
-  return new Promise((resolve) => {
-    const child = runToastScript(toastCommand(args), true)
-    if (!child) return resolve(-1)
-    child.on('error', () => resolve(-1))
-    child.on('exit', (code) => resolve(code ?? -1))
-  })
+  const tag = tagFromArgs(args)
+  const isApproval = args.includes('-Approval')
+  const showOne = () =>
+    new Promise((resolve) => {
+      if (tag && cancelledTags.has(tag)) return resolve(5)
+      const child = runToastScript(toastCommand(args), true)
+      if (!child) return resolve(-1)
+      child.on('error', () => resolve(-1))
+      child.on('exit', (code) => {
+        const value = code ?? -1
+        if (value !== 0) return resolve(value)
+        if (tag && cancelledTags.has(tag)) return resolve(value)
+        if (!isApproval) {
+          setTimeout(() => resolve(value), TOAST_GAP_MS)
+          return
+        }
+        let finished = false
+        let timer
+        const finish = (delay) => {
+          if (finished) return
+          finished = true
+          if (timer) clearTimeout(timer)
+          if (tag) toastWaiters.delete(tag)
+          setTimeout(() => resolve(value), delay)
+        }
+        if (tag) {
+          toastWaiters.set(tag, () => finish(TOAST_ADVANCE_GAP_MS))
+          timer = setTimeout(() => finish(TOAST_ADVANCE_GAP_MS), TOAST_APPROVAL_WAIT_MS)
+        } else {
+          setTimeout(() => resolve(value), TOAST_GAP_MS)
+        }
+      })
+    })
+  const task = toastChain.then(showOne, showOne)
+  toastChain = task.then(
+    () => undefined,
+    () => undefined,
+  )
+  return task
 }
 
 function registerProtocol() {
@@ -145,6 +210,8 @@ function showToast({ title, body, allowUri, denyUri, tag, hero, sessionTitle, ap
 }
 
 function removeToast(tag) {
+  markCancelled(tag)
+  advanceToast(tag)
   runToastScript(toastCommand(['-Remove', '-Tag', tag]), false)
 }
 

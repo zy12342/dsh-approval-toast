@@ -1,4 +1,4 @@
-# Windows toast notification actions for DSH approvals.
+﻿# Windows toast notification actions for DSH approvals.
 # Invoked by the dshnotify:// protocol handler registered by index.js.
 #
 # The URI is untrusted input: validate every field strictly before making any
@@ -28,11 +28,56 @@ try {
     $token = $pairs['token']
     $choice = $pairs['choice']
 
-    # Strict shapes only: loopback port, 16 hex chars rid, 32 hex chars token,
-    # and one of the two decision words. Anything else exits without networking.
     if ($port -notmatch '^[0-9]{1,5}$') { exit 2 }
     $portNumber = [int]$port
     if ($portNumber -lt 1 -or $portNumber -gt 65535) { exit 2 }
+
+    # dshnotify://open?... tells the host to switch the DSH client to the
+    # session that asked the question, then brings the window to the front.
+    if ($u.Host -eq 'open') {
+        if ($token -notmatch '^[0-9a-f]{32}$') { exit 2 }
+        $url = 'http://127.0.0.1:' + $portNumber + '/open?token=' + [Uri]::EscapeDataString($token)
+        Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10 | Out-Null
+        try {
+            Add-Type -TypeDefinition @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class DshActivate {
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int count);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int command);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    public static IntPtr FindWindow() {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((h, l) => {
+            var title = new StringBuilder(512);
+            var cls = new StringBuilder(128);
+            GetWindowText(h, title, 512);
+            GetClassName(h, cls, 128);
+            if (title.ToString().Contains("DeepSeek Harness") && cls.ToString().StartsWith("Chrome_WidgetWin")) {
+                found = h;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+}
+"@
+            $hwnd = [DshActivate]::FindWindow()
+            if ($hwnd -ne [IntPtr]::Zero) {
+                [void][DshActivate]::ShowWindow($hwnd, 9)
+                [void][DshActivate]::SetForegroundWindow($hwnd)
+            }
+        } catch { }
+        exit 0
+    }
+
+    # Strict shapes only: loopback port, 16 hex chars rid, 32 hex chars token,
+    # and one of the two decision words. Anything else exits without networking.
     if ($rid -notmatch '^[0-9a-f]{16}$') { exit 2 }
     if ($token -notmatch '^[0-9a-f]{32}$') { exit 2 }
     if ($choice -ne 'allow' -and $choice -ne 'deny') { exit 2 }

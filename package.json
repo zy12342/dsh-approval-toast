@@ -1,6 +1,6 @@
 {
   "name": "dsh-approval-toast",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Windows toast notifications for DeepSeek Harness approvals: approve or reject from the notification while DSH is in the background, with an in-app fallback; plus turn completion and error notifications.",
   "type": "module",
   "main": "index.js",
@@ -33,17 +33,22 @@
     "SECURITY.md",
     "notify-launch.vbs",
     "decision-launch.vbs",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "client.js"
   ],
   "exports": {
     ".": "./index.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./client": "./client.js"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   },
   "publishConfig": {
