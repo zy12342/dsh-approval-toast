@@ -39,7 +39,7 @@ window.__ModuleLoader__.load({
     }
 
     function ActiveSessionReporter(props) {
-      const sessionId = props && props.scope && props.scope.sessionId;
+      const sessionId = (props && props.sessionId) || (props && props.scope && props.scope.sessionId);
       React.useEffect(() => {
         if (!sessionId) return () => {};
         if (clearTimer) {
