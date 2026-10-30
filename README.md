@@ -1,3 +1,9 @@
+
+## Screenshots
+
+![Approval toast](assets/screenshots/approval.png)
+
+![Question toast](assets/screenshots/question.png)
 ﻿# dsh-approval-toast
 
 DeepSeek Harness（DSH）的 Windows 桌面通知插件：审批请求可以直接在通知上点「允许一次 / 拒绝」，不用切回 DSH。
