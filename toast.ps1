@@ -90,7 +90,7 @@ try {
     $tagXml = if ($Tag -ne '') { ' tag="' + (Esc $Tag) + '"' } else { '' }
     $groupXml = ' group="dsh-approval"'
 
-    $xml = '<toast' + $tagXml + $groupXml + '><visual><binding template="ToastGeneric">' +
+    $xml = '<toast' + $tagXml + $groupXml + ' duration="long"><visual><binding template="ToastGeneric">' +
         $textXml +
         $images +
         '</binding></visual>' + $actions + '</toast>'

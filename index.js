@@ -38,7 +38,7 @@ const LOGO_PATH = join(PLUGIN_DIR, 'assets', 'icon.png')
 const LOGO_ICO = join(PLUGIN_DIR, 'assets', 'icon.ico')
 const HERO_PATH = join(PLUGIN_DIR, 'assets', 'hero.jpg')
 const APPROVAL_TIMEOUT_MS = 60000
-const TOAST_GAP_MS = 6000
+const TOAST_GAP_MS = 3000
 const TOAST_APPROVAL_WAIT_MS = 60000
 const TOAST_ADVANCE_GAP_MS = 600
 const PROTOCOL = 'dshnotify'
@@ -112,13 +112,21 @@ function runToastScript(command, wait) {
   return child
 }
 
-let toastChain = Promise.resolve()
-const toastWaiters = new Map()
+let toastWaiters = new Map()
 const cancelledTags = new Set()
+let highPriorityActive = 0
+let infoRunning = false
+const infoQueue = []
+const infoKeys = new Set()
 
 function tagFromArgs(args) {
   const index = args.indexOf('-Tag')
   return index >= 0 ? args[index + 1] : ''
+}
+
+function valueFromArgs(args, flag) {
+  const index = args.indexOf(flag)
+  return index >= 0 ? String(args[index + 1] ?? '') : ''
 }
 
 function markCancelled(tag) {
@@ -135,52 +143,86 @@ function advanceToast(tag) {
   waiter()
 }
 
+function runToastOnce(args, isApproval) {
+  const tag = tagFromArgs(args)
+  return new Promise((resolve) => {
+    if (tag && cancelledTags.has(tag)) return resolve(5)
+    const child = runToastScript(toastCommand(args), true)
+    if (!child) return resolve(-1)
+    child.on('error', () => resolve(-1))
+    child.on('exit', (code) => {
+      const value = code ?? -1
+      if (value !== 0) return resolve(value)
+      if (tag && cancelledTags.has(tag)) return resolve(value)
+      if (!isApproval) {
+        setTimeout(() => resolve(value), TOAST_GAP_MS)
+        return
+      }
+      let finished = false
+      let timer
+      const finish = (delay) => {
+        if (finished) return
+        finished = true
+        if (timer) clearTimeout(timer)
+        if (tag) toastWaiters.delete(tag)
+        setTimeout(() => resolve(value), delay)
+      }
+      if (tag) {
+        toastWaiters.set(tag, () => finish(TOAST_ADVANCE_GAP_MS))
+        timer = setTimeout(() => finish(TOAST_ADVANCE_GAP_MS), TOAST_APPROVAL_WAIT_MS)
+      } else {
+        setTimeout(() => resolve(value), TOAST_GAP_MS)
+      }
+    })
+  })
+}
+
+function infoKey(args) {
+  return [tagFromArgs(args), valueFromArgs(args, '-Title'), valueFromArgs(args, '-Body')].join('|')
+}
+
+function pumpInfoQueue() {
+  if (infoRunning || highPriorityActive > 0 || infoQueue.length === 0) return
+  infoRunning = true
+  const item = infoQueue.shift()
+  infoKeys.delete(item.key)
+  runToastOnce(item.args, false).then(item.resolve, item.reject).finally(() => {
+    infoRunning = false
+    setTimeout(pumpInfoQueue, 0)
+  })
+}
+
+function enqueueInfoToast(args) {
+  const key = infoKey(args)
+  if (infoKeys.has(key)) return Promise.resolve(5)
+  infoKeys.add(key)
+  return new Promise((resolve, reject) => {
+    infoQueue.push({ args, key, resolve, reject })
+    pumpInfoQueue()
+  })
+}
+
 /**
- * Show toasts one at a time. Windows can otherwise stack or collapse several
- * rapid notifications into the Action Center. Info toasts get a short display
- * gap; approval toasts wait for the user's decision (or the approval timeout)
- * before the next queued toast is shown.
+ * Approval and question toasts bypass the info queue so they are never delayed
+ * by completion/error notifications. Info toasts are shown one at a time with
+ * a short gap and duplicate pending entries are dropped.
  */
 function showToastProcess(args) {
-  const tag = tagFromArgs(args)
   const isApproval = args.includes('-Approval')
-  const showOne = () =>
-    new Promise((resolve) => {
-      if (tag && cancelledTags.has(tag)) return resolve(5)
-      const child = runToastScript(toastCommand(args), true)
-      if (!child) return resolve(-1)
-      child.on('error', () => resolve(-1))
-      child.on('exit', (code) => {
-        const value = code ?? -1
-        if (value !== 0) return resolve(value)
-        if (tag && cancelledTags.has(tag)) return resolve(value)
-        if (!isApproval) {
-          setTimeout(() => resolve(value), TOAST_GAP_MS)
-          return
-        }
-        let finished = false
-        let timer
-        const finish = (delay) => {
-          if (finished) return
-          finished = true
-          if (timer) clearTimeout(timer)
-          if (tag) toastWaiters.delete(tag)
-          setTimeout(() => resolve(value), delay)
-        }
-        if (tag) {
-          toastWaiters.set(tag, () => finish(TOAST_ADVANCE_GAP_MS))
-          timer = setTimeout(() => finish(TOAST_ADVANCE_GAP_MS), TOAST_APPROVAL_WAIT_MS)
-        } else {
-          setTimeout(() => resolve(value), TOAST_GAP_MS)
-        }
-      })
+  const isQuestion = !isApproval && args.includes('-OpenUri')
+  if (isApproval || isQuestion) {
+    highPriorityActive += 1
+    const task = runToastOnce(args, isApproval)
+    task.then(
+      () => undefined,
+      () => undefined,
+    ).finally(() => {
+      highPriorityActive = Math.max(0, highPriorityActive - 1)
+      pumpInfoQueue()
     })
-  const task = toastChain.then(showOne, showOne)
-  toastChain = task.then(
-    () => undefined,
-    () => undefined,
-  )
-  return task
+    return task
+  }
+  return enqueueInfoToast(args)
 }
 
 function registerProtocol() {

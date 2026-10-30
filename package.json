@@ -1,6 +1,6 @@
 {
   "name": "dsh-approval-toast",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Windows toast notifications for DeepSeek Harness approvals: approve or reject from the notification while DSH is in the background, with an in-app fallback; plus turn completion and error notifications.",
   "type": "module",
   "main": "index.js",
